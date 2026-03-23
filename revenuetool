@@ -1,594 +1,484 @@
-export const metadata = {
-  title: "Revenue Management AI — İstanbul Basın Ekspres",
-  description: "Günlük gelir yönetimi ve fiyat optimizasyon aracı",
-};
-
-export default function RootLayout({ children }) {
-  return (
-    <html lang="tr">
-      <body style={{ margin: 0, padding: 0 }}>{children}</body>
-    </html>
-  );
-}
-
-/** @type {import('next').NextConfig} */
-const nextConfig = {}
-module.exports = nextConfig
-
-{
-  "name": "revenue-management-tool",
-  "version": "1.0.0",
-  "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
-  },
-  "dependencies": {
-    "next": "14.2.3",
-    "react": "^18",
-    "react-dom": "^18"
-  }
-}
-
-import RevenueManagementTool from "./RevenueManagementTool";
-
-export default function Page() {
-  return <RevenueManagementTool />;
-}
-
 "use client";
 import { useState, useRef, useCallback, useEffect } from "react";
 
-const PRINT_CSS = `
-  @media print {
-    body { background: #fff !important; color: #111 !important; font-family: Georgia, serif; }
-    .no-print { display: none !important; }
-    @page { margin: 20mm; size: A4; }
-  }
-`;
-
-const COMPETITORS = [
-  { name: "The G Hotels İstanbul", short: "The G Hotels", matchKey: "the g" },
-  { name: "Wyndham Grand İstanbul Güneşli", short: "Wyndham Grand", matchKey: "wyndham" },
-  { name: "Elite World Basın Ekspres Hotel", short: "Elite World", matchKey: "elite" },
-  { name: "Hilton Garden Inn Istanbul Basın Ekspres", short: "Hilton Garden Inn", matchKey: "hilton" },
-  { name: "Park Inn by Radisson Istanbul Airport", short: "Park Inn", matchKey: "park" },
-  { name: "İstanbul Gönen Hotel Basın Ekspres", short: "Gönen", matchKey: "gonen" },
-  { name: "Gorrion Hotel Basın Ekspres Istanbul", short: "Gorrion", matchKey: "gorrion" },
-];
-
-const SYSTEM_PROMPT = `Sen butik ve şehir otelleri için özel olarak tasarlanmış, kârlılık odaklı bir "Yapay Zeka Gelir Yönetimi (Revenue Management) Asistanısın". Bütçe ve ciro EUR cinsindendir. Compset fiyatları TRY'den EUR'a çevrilmiştir.
+const SYSTEM_PROMPT = `Sen butik ve şehir otelleri için özel olarak tasarlanmış, kârlılık odaklı bir "Yapay Zeka Gelir Yönetimi (Revenue Management) Asistanısın". Bütçe ve ciro EUR cinsindendir.
 
 [HESAPLAMA KURALLARI]
-1. Kalan Oda Havuzu = Toplam Oda Sayısı x Kalan Gün Sayısı
-2. Kalan Bütçe İhtiyacı = Aylık Bütçe Hedefi (EUR) - Gerçekleşen Ciro (EUR)
-3. Required ADR = Kalan Bütçe İhtiyacı / Kalan Oda Havuzu  → EUR cinsinden
+1. Hedef Oda Havuzu = Toplam Oda × Ay Gün × Hedef Doluluk%
+2. Kalan Satılabilir = Hedef Havuz − Kümülatif Satılan
+3. Net ADR = Kalan Bütçe ÷ Kalan Satılabilir
+4. Acenta Brüt ADR = Net ADR ÷ (1 − Komisyon%) × (1 + KDV%)
+5. Direkt Brüt ADR = Net ADR × (1 + KDV%)
 
 [STRATEJİ]
-- Durum A (Required ADR > Compset ADR): Bütçe gerisindeyiz. Ekstra değer öner.
-- Durum B (Required ADR < Compset ADR): Avantajlıyız! Kârı maksimize et.
-- Durum C (Özel talep notu): Agresif fiyat artışı veya MinLOS öner.
+- Durum A (Acenta Brüt > Compset): Bütçe gerisindeyiz. Ekstra değer öner (transfer, ikram, esnek iptal).
+- Durum B (Acenta Brüt < Compset): Avantajlıyız! Fiyatı compset'e çek, kârı maksimize et.
+- Durum C (Market demand yüksek veya tatil/etkinlik varsa): MinLOS veya agresif fiyat artışı öner.
 
-[ÇIKTI FORMATI]
-📊 **Günlük Finansal Özet:** [Kalan bütçe (EUR), oda havuzu, Required ADR (EUR)]
-🎯 **Günün Fiyat Kararı:** [Net satış fiyatı EUR ve karşılığı TRY olarak]
-🧠 **Stratejik Gerekçe:** [2-3 cümle analiz]
-⚡ **Aksiyon Önerisi:** [Tek operasyonel tavsiye]`;
-
-const IMAGE_PARSE_PROMPT = `Sen bir otel gelir yönetimi analistisisin. Kullanıcı Google Hotels veya Trivago harita görüntüsü gönderiyor. Fiyatlar Türk Lirası (TRY / ₺) cinsinden görünüyor.
-
-Görevin: Görüntüdeki otel fiyatlarını oku. Özellikle şu 7 rakip oteli ara:
-1. The G Hotels (İstanbul) — listede ilk sıraya koy
-2. Wyndham Grand (İstanbul Güneşli veya Europe)
-3. Elite World (Basın Ekspres)
-4. Hilton Garden Inn (Istanbul)
-5. Park Inn (Istanbul Airport / Radisson)
-6. Gonen / Istanbul Gonen / İstanbul Gönen / Isyanbul Gonen (hepsi aynı otel, name alanına "Gonen" yaz)
-7. Gorrion (Istanbul)
-
-Bu oteller görüntüde yoksa, görüntüdeki diğer otellerin fiyatlarını da ekle.
-
-Fiyatlar TRY cinsindendir. currency alanına "TRY" yaz.
-
-SADECE şu JSON formatında yanıt ver, hiçbir açıklama veya markdown ekleme:
-{"hotels":[{"name":"Wyndham Grand","price":5065,"currency":"TRY"},{"name":"Hilton Garden Inn","price":3125,"currency":"TRY"},{"name":"Gonen","price":2788,"currency":"TRY"}],"source":"Google Hotels","foundCount":3}`;
+[ÇIKTI FORMATI — ZORUNLU]
+📊 **Günlük Finansal Özet:** [Kalan bütçe, kalan havuz, Net ADR]
+🎯 **Günün Fiyat Kararı:** [Acenta brüt ve direkt brüt fiyat — EUR]
+🧠 **Stratejik Gerekçe:** [2-3 cümle piyasa + bütçe analizi]
+⚡ **Aksiyon Önerisi:** [O güne özel tek operasyonel tavsiye]`;
 
 export default function RevenueManagementTool() {
-  const [constants, setConstants] = useState({ totalRooms: "", monthDays: "31", sellThrough: "85", commission: "20", vat: "12", monthlyBudget: "" });
-  const [vars, setVars] = useState({ realizedRevenue: "", soldRooms: "", remainingDays: "", compsetADR: "", compsetADR_TRY: "", compsetDetails: [], demandNotes: "" });
+  const [constants, setConstants] = useState({
+    totalRooms: "264", monthDays: "31", sellThrough: "85",
+    commission: "20", vat: "12", monthlyBudget: ""
+  });
+  const [vars, setVars] = useState({
+    realizedRevenue: "", soldRooms: "", remainingDays: "",
+    compsetADR: "", compsetDetails: [], demandNotes: "", holidays: "", todayDemand: ""
+  });
+  const [excelData, setExcelData] = useState(null); // parsed from xlsx
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [slots, setSlots] = useState([
-    { loading: false, dragOver: false, preview: null, hotels: [], source: "" },
-    { loading: false, dragOver: false, preview: null, hotels: [], source: "" },
-  ]);
-  const [exchangeRate, setExchangeRate] = useState(null); // TRY per 1 EUR
+  const [xlsxLoading, setXlsxLoading] = useState(false);
+  const [exchangeRate, setExchangeRate] = useState(null);
   const [rateLoading, setRateLoading] = useState(false);
   const [rateManual, setRateManual] = useState("");
   const [error, setError] = useState(null);
   const [locked, setLocked] = useState(false);
-  const [showComp, setShowComp] = useState(false);
-  const fileRefs = [useRef(null), useRef(null)];
+  const [dragOver, setDragOver] = useState(false);
+  const fileRef = useRef(null);
 
+  // Calculations
   const totalRooms = parseFloat(constants.totalRooms) || 0;
   const monthDays = parseFloat(constants.monthDays) || 31;
   const sellThrough = Math.min(parseFloat(constants.sellThrough) || 85, 100) / 100;
   const commission = (parseFloat(constants.commission) || 20) / 100;
   const vat = (parseFloat(constants.vat) || 12) / 100;
   const soldRooms = parseFloat(vars.soldRooms) || 0;
-  const remDays = parseFloat(vars.remainingDays) || 0;
   const totalMonthPool = Math.round(totalRooms * monthDays * sellThrough);
   const roomPool = vars.soldRooms !== "" ? Math.max(totalMonthPool - soldRooms, 0) : totalMonthPool;
   const occupancyPct = totalMonthPool > 0 && vars.soldRooms !== "" ? Math.round((soldRooms / totalMonthPool) * 100) : null;
   const remBudget = (parseFloat(constants.monthlyBudget) || 0) - (parseFloat(vars.realizedRevenue) || 0);
-  // Net ADR = bütçeye ulaşmak için gereken net gelir/oda
   const netADR = roomPool > 0 ? remBudget / roomPool : 0;
-  // Brüt ADR (acenta): Net ÷ (1 - komisyon) × (1 + KDV)
   const grossADR_agency = netADR > 0 ? (netADR / (1 - commission)) * (1 + vat) : 0;
-  // Brüt ADR (direkt): Net × (1 + KDV)
   const grossADR_direct = netADR > 0 ? netADR * (1 + vat) : 0;
-  // Required ADR olarak acenta brüt fiyatını göster (en muhafazakar)
-  const reqADR = grossADR_agency;
   const compsetEUR = parseFloat(vars.compsetADR) || 0;
-  const situation = reqADR === 0 ? null : reqADR > compsetEUR ? "A" : "B";
+  const situation = grossADR_agency === 0 ? null : grossADR_agency > compsetEUR ? "A" : "B";
   const activeRate = parseFloat(rateManual) || exchangeRate;
 
-  // Fetch live EUR/TRY rate
+  // Fetch EUR/TRY rate
   const fetchRate = useCallback(async () => {
     setRateLoading(true);
     try {
-      const resp = await fetch("https://api.frankfurter.app/latest?from=EUR&to=TRY");
-      const data = await resp.json();
-      if (data?.rates?.TRY) {
-        setExchangeRate(Math.round(data.rates.TRY * 100) / 100);
-      }
-    } catch {
-      // fallback — user can enter manually
-    } finally {
-      setRateLoading(false);
-    }
+      const r = await fetch("https://api.frankfurter.app/latest?from=EUR&to=TRY");
+      const d = await r.json();
+      if (d?.rates?.TRY) setExchangeRate(Math.round(d.rates.TRY * 100) / 100);
+    } catch {} finally { setRateLoading(false); }
   }, []);
 
   useEffect(() => { fetchRate(); }, [fetchRate]);
 
-  useEffect(() => {
-    const style = document.createElement("style");
-    style.innerHTML = PRINT_CSS;
-    document.head.appendChild(style);
-    return () => document.head.removeChild(style);
-  }, []);
-
-  // Convert TRY hotels to EUR and merge
-  const mergeAndSetCompset = useCallback((slot0Hotels, slot1Hotels, rate) => {
-    if (!rate) return;
-    const all = [...slot0Hotels, ...slot1Hotels];
-    const seen = new Set();
-    const deduped = all.filter(h => {
-      const key = h.name?.toLowerCase().trim();
-      if (seen.has(key)) return false;
-      seen.add(key); return true;
-    });
-    if (deduped.length === 0) return;
-
-    // Convert each hotel price to EUR
-    const converted = deduped.map(h => ({
-      ...h,
-      priceTRY: h.currency === "TRY" ? h.price : Math.round(h.price * rate),
-      priceEUR: h.currency === "TRY" ? Math.round((h.price / rate) * 100) / 100 : h.price,
-    }));
-
-    const avgEUR = Math.round((converted.reduce((s, h) => s + h.priceEUR, 0) / converted.length) * 100) / 100;
-    const avgTRY = Math.round(converted.reduce((s, h) => s + h.priceTRY, 0) / converted.length);
-
-    setVars(v => ({
-      ...v,
-      compsetADR: avgEUR.toString(),
-      compsetADR_TRY: avgTRY.toString(),
-      compsetDetails: converted,
-    }));
-    setShowComp(true);
-  }, []);
-
-  // Re-run conversion if rate changes
-  useEffect(() => {
-    if (!activeRate) return;
-    const s0 = slots[0].hotels;
-    const s1 = slots[1].hotels;
-    if (s0.length > 0 || s1.length > 0) mergeAndSetCompset(s0, s1, activeRate);
-  }, [activeRate, mergeAndSetCompset]);
-
-  const processImage = useCallback(async (file, slotIdx) => {
-    if (!file || !file.type.startsWith("image/")) { setError("Geçerli bir görüntü dosyası yükleyin."); return; }
-    if (!activeRate) { setError("Önce EUR/TRY kurunu girin."); return; }
+  // New month reset
+  const handleNewMonth = () => {
+    const now = new Date();
+    const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    setConstants(c => ({ ...c, monthDays: days.toString() }));
+    setVars(v => ({ ...v, realizedRevenue: "", soldRooms: "", remainingDays: "", compsetADR: "", compsetDetails: [], demandNotes: "", holidays: "", todayDemand: "" }));
+    setExcelData(null);
+    setResult(null);
     setError(null);
-    const preview = URL.createObjectURL(file);
-    setSlots(prev => prev.map((s, i) => i === slotIdx ? { ...s, loading: true, preview } : s));
+  };
+
+  // Parse OTA Insight Excel
+  const parseExcel = useCallback(async (file) => {
+    setXlsxLoading(true);
+    setError(null);
     try {
-      const base64 = await new Promise((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => res(r.result.split(",")[1]);
-        r.onerror = () => rej(new Error("Okunamadı"));
-        r.readAsDataURL(file);
-      });
-      const resp = await fetch("/api/claude", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514", max_tokens: 1000,
-          system: IMAGE_PARSE_PROMPT,
-          messages: [{ role: "user", content: [
-            { type: "image", source: { type: "base64", media_type: file.type || "image/png", data: base64 } },
-            { type: "text", text: "Bu görüntüdeki otel fiyatlarını JSON formatında çıkar. Fiyatlar TRY cinsindendir." }
-          ]}]
-        }),
-      });
-      const data = await resp.json();
-      const text = data.content?.filter(b => b.type === "text").map(b => b.text).join("") || "";
-      const match = text.match(/\{[\s\S]*\}/);
-      if (!match) throw new Error("Veri okunamadı");
-      const parsed = JSON.parse(match[0]);
-      const valid = (parsed.hotels || []).filter(h => h.price > 0);
-      if (valid.length === 0) { setError("Bu görüntüde fiyat bulunamadı."); setSlots(prev => prev.map((s, i) => i === slotIdx ? { ...s, loading: false } : s)); return; }
+      const SheetJS = await import("https://cdn.sheetjs.com/xlsx-0.20.1/package/xlsx.mjs");
+      const buf = await file.arrayBuffer();
+      const wb = SheetJS.read(buf, { type: "array", cellDates: true });
 
-      setSlots(prev => {
-        const updated = prev.map((s, i) => i === slotIdx
-          ? { ...s, loading: false, hotels: valid, source: parsed.source || "Harita" }
-          : s
-        );
-        const s0 = slotIdx === 0 ? valid : prev[0].hotels;
-        const s1 = slotIdx === 1 ? valid : prev[1].hotels;
-        setTimeout(() => mergeAndSetCompset(s0, s1, activeRate), 0);
-        return updated;
+      // Parse "Rates" sheet — has individual hotel prices
+      const ratesSheet = wb.Sheets["Rates"];
+      const overviewSheet = wb.Sheets["Overview"];
+
+      if (!ratesSheet || !overviewSheet) throw new Error("Beklenen sayfalar bulunamadı (Rates, Overview)");
+
+      const rates = SheetJS.utils.sheet_to_json(ratesSheet, { header: 1, defval: null });
+      const overview = SheetJS.utils.sheet_to_json(overviewSheet, { header: 1, defval: null });
+
+      // Find header row in Rates (row with "Day", "Date")
+      let headerIdx = rates.findIndex(r => r.some(c => c === "Day"));
+      if (headerIdx < 0) throw new Error("Rates sayfasında başlık satırı bulunamadı");
+      const headers = rates[headerIdx];
+
+      // Today
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      // Find today's row
+      const todayRow = rates.slice(headerIdx + 1).find(row => {
+        const d = row[headers.indexOf("Date")];
+        if (!d) return false;
+        const rd = new Date(d); rd.setHours(0, 0, 0, 0);
+        return rd.getTime() === today.getTime();
       });
+
+      if (!todayRow) throw new Error("Bugünün verisi Excel'de bulunamadı");
+
+      // Extract hotel prices (all columns after "Market demand")
+      const hotelCols = [];
+      const knownNonHotels = ["Day","Date","Market demand","Centro Westside by Rotana"];
+      headers.forEach((h, i) => {
+        if (h && !knownNonHotels.includes(h)) {
+          const price = todayRow[i];
+          if (price && typeof price === "number") {
+            hotelCols.push({ name: h, price: Math.round(price * 100) / 100 });
+          }
+        }
+      });
+
+      // Get median compset from Overview
+      const ovHeaders = overview.find(r => r.some(c => c === "Day"));
+      const ovHIdx = overview.findIndex(r => r.some(c => c === "Day"));
+      const ovTodayRow = overview.slice(ovHIdx + 1).find(row => {
+        const d = row[ovHeaders.indexOf("Date")];
+        if (!d) return false;
+        const rd = new Date(d); rd.setHours(0, 0, 0, 0);
+        return rd.getTime() === today.getTime();
+      });
+
+      const medianCompset = ovTodayRow ? ovTodayRow[ovHeaders.indexOf("Median lowest compset")] : null;
+      const marketDemand = ovTodayRow ? ovTodayRow[ovHeaders.indexOf("Market demand")] : null;
+      const holidays = ovTodayRow ? ovTodayRow[ovHeaders.indexOf("Holidays")] : null;
+      const events = ovTodayRow ? ovTodayRow[ovHeaders.indexOf("Events")] : null;
+
+      const demandPct = marketDemand ? Math.round(marketDemand * 100) : null;
+      const demandLabel = demandPct !== null ? (demandPct > 70 ? "🔴 Yüksek" : demandPct > 40 ? "🟡 Orta" : "🟢 Düşük") : null;
+
+      setExcelData({ hotels: hotelCols, medianCompset, demandPct, demandLabel, holidays, events, updatedAt: new Date().toLocaleTimeString("tr-TR") });
+
+      // Auto-fill compset and demand
+      if (medianCompset) setVars(v => ({
+        ...v,
+        compsetADR: medianCompset.toString(),
+        compsetDetails: hotelCols,
+        todayDemand: demandPct?.toString() || "",
+        demandNotes: [
+          demandLabel ? `Piyasa talebi: ${demandLabel} (%${demandPct})` : "",
+          holidays ? `Tatil: ${holidays}` : "",
+          events ? `Etkinlik: ${events}` : ""
+        ].filter(Boolean).join(" · ") || v.demandNotes
+      }));
+
     } catch (e) {
-      setError("Görüntü analiz edilemedi: " + e.message);
-      setSlots(prev => prev.map((s, i) => i === slotIdx ? { ...s, loading: false } : s));
-    }
-  }, [mergeAndSetCompset, activeRate]);
+      setError("Excel okunamadı: " + e.message);
+    } finally { setXlsxLoading(false); }
+  }, []);
 
+  const handleFile = useCallback((file) => {
+    if (!file) return;
+    if (!file.name.match(/\.(xlsx|xls)$/i)) { setError("Lütfen .xlsx dosyası yükleyin"); return; }
+    parseExcel(file);
+  }, [parseExcel]);
+
+  // Analyze
   const handleAnalyze = async () => {
     if (!constants.totalRooms || !constants.monthlyBudget || !vars.realizedRevenue || !vars.remainingDays || !vars.compsetADR) {
-      setError("Tüm zorunlu alanları doldurun (Satılan oda opsiyoneldir)."); return;
+      setError("Zorunlu alanları doldurun (Ciro, Kalan Gün, Compset ADR)"); return;
     }
     setError(null); setLoading(true); setResult(null);
-    const detail = vars.compsetDetails.length > 0
-      ? "\nRAKİP FİYATLAR (TRY → EUR):\n" + vars.compsetDetails.map(h => `- ${h.name}: ₺${h.priceTRY?.toLocaleString("tr-TR")} → €${h.priceEUR?.toFixed(2)}`).join("\n")
+
+    const hotelDetail = vars.compsetDetails.length > 0
+      ? "\nRAKİP FİYATLAR (EUR, Booking.com):\n" + vars.compsetDetails.map(h => `- ${h.name}: €${h.price}`).join("\n")
       : "";
-    const msg = `AYLIK SABİTLER:\n- Oda: ${constants.totalRooms} | Ay: ${monthDays} gün | Hedef Doluluk: %${constants.sellThrough}\n- Hedef Oda Havuzu: ${totalMonthPool}\n- Bütçe: €${Number(constants.monthlyBudget).toLocaleString("de-DE")}\n- Acenta Komisyonu: %${constants.commission} | KDV: %${constants.vat}\n- EUR/TRY Kuru: ${activeRate}\n\nGÜNLÜK:\n- Ciro: €${Number(vars.realizedRevenue).toLocaleString("de-DE")}\n- Kümülatif Satılan Oda: ${vars.soldRooms || "belirtilmedi"}\n- Kalan Satılabilir Havuz: ${roomPool}${occupancyPct !== null ? ` (%${occupancyPct} tamamlandı)` : ""}\n- Kalan Gün: ${vars.remainingDays}\n- Compset ADR: €${Number(vars.compsetADR).toFixed(2)}${detail}\n- Notlar: ${vars.demandNotes || "Yok"}\n\nHESAP:\n- Kalan Bütçe: €${remBudget.toFixed(2)}\n- Net ADR (bütçe/havuz): €${netADR.toFixed(2)}\n- Brüt ADR Acenta (%${constants.commission} kom + %${constants.vat} KDV): €${grossADR_agency.toFixed(2)}\n- Brüt ADR Direkt (%${constants.vat} KDV): €${grossADR_direct.toFixed(2)}\n- Durum: ${situation === "A" ? "A — Acenta brüt fiyatı compset üstünde" : situation === "B" ? "B — Acenta brüt fiyatı compset altında, avantajlı" : "?"}`;
+
+    const msg = `AYLIK SABİTLER:
+- Oda: ${constants.totalRooms} | Ay: ${monthDays} gün | Hedef Doluluk: %${constants.sellThrough}
+- Hedef Havuz: ${totalMonthPool} | Komisyon: %${constants.commission} | KDV: %${constants.vat}
+- Bütçe: €${Number(constants.monthlyBudget).toLocaleString("de-DE")}
+- EUR/TRY Kuru: ${activeRate || "bilinmiyor"}
+
+GÜNLÜK VERİLER:
+- Gerçekleşen Ciro: €${Number(vars.realizedRevenue).toLocaleString("de-DE")}
+- Kümülatif Satılan Oda: ${vars.soldRooms || "girilmedi"}
+- Kalan Satılabilir Havuz: ${roomPool}${occupancyPct !== null ? ` (%${occupancyPct} tamamlandı)` : ""}
+- Kalan Gün: ${vars.remainingDays}
+- Median Compset ADR: €${vars.compsetADR}${hotelDetail}
+- Piyasa Talebi: ${vars.todayDemand ? `%${vars.todayDemand}` : "bilinmiyor"}
+- Notlar: ${vars.demandNotes || "yok"}
+
+HESAP:
+- Kalan Bütçe: €${remBudget.toFixed(2)}
+- Net ADR: €${netADR.toFixed(2)}
+- Acenta Brüt ADR: €${grossADR_agency.toFixed(2)}
+- Direkt Brüt ADR: €${grossADR_direct.toFixed(2)}
+- Durum: ${situation === "A" ? "A — Acenta brüt > Compset, bütçe gerisinde" : situation === "B" ? "B — Acenta brüt < Compset, avantajlı" : "?"}`;
+
     try {
-      const resp = await fetch("/api/claude", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, system: SYSTEM_PROMPT, messages: [{ role: "user", content: msg }] }) });
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, system: SYSTEM_PROMPT, messages: [{ role: "user", content: msg }] })
+      });
       const data = await resp.json();
       setResult(data.content?.map(b => b.text || "").join("\n") || "Yanıt alınamadı.");
     } catch (e) { setError("API hatası: " + e.message); } finally { setLoading(false); }
   };
 
+  // PDF Export
   const handlePDFExport = useCallback(() => {
     const today = new Date().toLocaleDateString("tr-TR", { day: "2-digit", month: "long", year: "numeric" });
-    const compsetRows = vars.compsetDetails.length > 0
-      ? vars.compsetDetails.map(h => `<tr><td>${h.name}</td><td style="text-align:right;">₺${h.priceTRY?.toLocaleString("tr-TR")}</td><td style="text-align:right;font-weight:600;">€${h.priceEUR?.toFixed(2)}</td></tr>`).join("")
+    const hotelRows = vars.compsetDetails.length > 0
+      ? vars.compsetDetails.map(h => `<tr><td>${h.name}</td><td style="text-align:right;font-weight:600;">€${h.price}</td></tr>`).join("")
       : "";
     const resultHtml = result
       ? result.split("\n").map(line => {
           if (!line.trim()) return "<br/>";
-          const cleaned = line.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-          if (["📊","🎯","🧠","⚡"].some(e => line.startsWith(e))) return `<p style="margin:12px 0 6px;font-size:15px;">${cleaned}</p>`;
-          return `<p style="margin:4px 0 4px 20px;font-size:14px;color:#444;">${cleaned}</p>`;
-        }).join("")
-      : "<p>Henüz analiz yapılmadı.</p>";
+          const c = line.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+          if (["📊","🎯","🧠","⚡"].some(e => line.startsWith(e))) return `<p style="margin:12px 0 6px;font-size:15px;">${c}</p>`;
+          return `<p style="margin:4px 0 4px 20px;font-size:14px;color:#444;">${c}</p>`;
+        }).join("") : "<p>Analiz yapılmadı.</p>";
 
-    const html = `<!DOCTYPE html><html lang="tr"><head><meta charset="UTF-8"/>
-      <title>Revenue Management Raporu — ${today}</title>
-      <style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:Georgia,serif;color:#1a1a1a;background:#fff;padding:40px;max-width:820px;margin:0 auto;}.header{border-bottom:3px solid #c9a84c;padding-bottom:20px;margin-bottom:28px;display:flex;justify-content:space-between;align-items:flex-end;}.header-left h1{font-size:22px;font-weight:700;}.header-left h2{font-size:13px;font-weight:400;color:#888;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:6px;}.header-right{text-align:right;font-size:12px;color:#888;}.date{font-size:15px;font-weight:700;color:#c9a84c;}.section{margin-bottom:24px;}.section-title{font-size:11px;letter-spacing:0.15em;text-transform:uppercase;color:#c9a84c;font-weight:700;margin-bottom:12px;border-bottom:1px solid #f0e8d0;padding-bottom:6px;}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;}.metric{background:#faf8f3;border:1px solid #e8dcc8;border-radius:8px;padding:12px;text-align:center;}.metric-label{font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;}.metric-value{font-size:17px;font-weight:700;}.gold{color:#c9a84c;}.green{color:#2d8a4e;}.red{color:#c0392b;}table{width:100%;border-collapse:collapse;font-size:13px;}th{background:#faf8f3;padding:8px 12px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.08em;color:#888;border-bottom:2px solid #e8dcc8;}td{padding:8px 12px;border-bottom:1px solid #f0ece4;}.result-box{background:#fffdf7;border:1px solid #e8dcc8;border-left:4px solid #c9a84c;border-radius:8px;padding:20px;}.footer{margin-top:40px;padding-top:16px;border-top:1px solid #e8dcc8;font-size:11px;color:#bbb;display:flex;justify-content:space-between;}@media print{@page{margin:15mm;}}</style>
-      </head><body>
-      <div class="header"><div class="header-left"><h2>İstanbul Basın Ekspres · Revenue Management</h2><h1>Günlük Fiyat Analiz Raporu</h1></div><div class="header-right"><div class="date">${today}</div><div>Kalan Gün: ${vars.remainingDays} | Oda: ${constants.totalRooms} | Hedef Doluluk: %${constants.sellThrough} | Kur: 1€=₺${activeRate}</div></div></div>
-      <div class="section"><div class="section-title">Finansal Özet (EUR)</div>
-      <div class="metrics">
-        <div class="metric"><div class="metric-label">Aylık Bütçe</div><div class="metric-value">€${Number(constants.monthlyBudget).toLocaleString("de-DE")}</div></div>
-        <div class="metric"><div class="metric-label">Gerçekleşen Ciro</div><div class="metric-value">€${Number(vars.realizedRevenue).toLocaleString("de-DE")}</div></div>
-        <div class="metric"><div class="metric-label">Kalan Bütçe</div><div class="metric-value red">€${remBudget.toFixed(2)}</div></div>
-        <div class="metric"><div class="metric-label">Required ADR</div><div class="metric-value gold">€${reqADR.toFixed(2)}</div></div>
-      </div>
-      <div class="metrics">
-        <div class="metric"><div class="metric-label">Hedef Havuz (%${constants.sellThrough})</div><div class="metric-value">${totalMonthPool.toLocaleString()}</div></div>
-        <div class="metric"><div class="metric-label">Kalan Satılabilir</div><div class="metric-value">${roomPool.toLocaleString()}</div></div>
-        <div class="metric"><div class="metric-label">Compset ADR</div><div class="metric-value">€${Number(vars.compsetADR).toFixed(2)}</div></div>
-        <div class="metric"><div class="metric-label">Durum</div><div class="metric-value ${situation==="A"?"red":"green"}">${situation==="A"?"Bütçe Gerisinde":"Avantajlı"}</div></div>
-      </div></div>
-      ${compsetRows ? `<div class="section"><div class="section-title">Rakip Fiyatları (TRY → EUR @ ${activeRate})</div><table><thead><tr><th>Otel</th><th style="text-align:right;">TRY Fiyat</th><th style="text-align:right;">EUR Karşılığı</th></tr></thead><tbody>${compsetRows}<tr style="background:#faf8f3;font-weight:700;"><td>ORTALAMA COMPSET ADR</td><td style="text-align:right;">₺${Number(vars.compsetADR_TRY).toLocaleString("tr-TR")}</td><td style="text-align:right;color:#c9a84c;">€${Number(vars.compsetADR).toFixed(2)}</td></tr></tbody></table></div>` : ""}
-      <div class="section"><div class="section-title">AI Analiz Sonucu</div><div class="result-box">${resultHtml}</div></div>
-      ${vars.demandNotes ? `<div class="section"><div class="section-title">Günlük Notlar</div><p style="font-size:14px;color:#555;font-style:italic;">${vars.demandNotes}</p></div>` : ""}
-      <div class="footer"><span>Powered by Claude · Revenue Intelligence · İstanbul Basın Ekspres</span><span>${today}</span></div>
-      </body></html>`;
+    const html = `<!DOCTYPE html><html lang="tr"><head><meta charset="UTF-8"/><title>Revenue Raporu — ${today}</title>
+    <style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:Georgia,serif;color:#1a1a1a;padding:40px;max-width:820px;margin:0 auto;}.hdr{border-bottom:3px solid #c9a84c;padding-bottom:16px;margin-bottom:24px;display:flex;justify-content:space-between;align-items:flex-end;}.hdr h1{font-size:20px;font-weight:700;}.hdr h2{font-size:12px;color:#888;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:4px;}.hdr-r{text-align:right;font-size:12px;color:#888;}.date{font-size:14px;font-weight:700;color:#c9a84c;}.sec{margin-bottom:20px;}.sec-t{font-size:11px;letter-spacing:0.15em;text-transform:uppercase;color:#c9a84c;font-weight:700;margin-bottom:10px;border-bottom:1px solid #f0e8d0;padding-bottom:4px;}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px;}.m{background:#faf8f3;border:1px solid #e8dcc8;border-radius:8px;padding:10px;text-align:center;}.ml{font-size:10px;color:#aaa;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;}.mv{font-size:16px;font-weight:700;}.gold{color:#c9a84c;}.green{color:#2d8a4e;}.red{color:#c0392b;}table{width:100%;border-collapse:collapse;font-size:13px;}th{background:#faf8f3;padding:7px 10px;text-align:left;font-size:11px;text-transform:uppercase;color:#888;border-bottom:2px solid #e8dcc8;}td{padding:7px 10px;border-bottom:1px solid #f0ece4;}.rb{background:#fffdf7;border:1px solid #e8dcc8;border-left:4px solid #c9a84c;border-radius:8px;padding:18px;}.ftr{margin-top:32px;padding-top:12px;border-top:1px solid #e8dcc8;font-size:11px;color:#bbb;display:flex;justify-content:space-between;}@media print{@page{margin:15mm;}}</style>
+    </head><body>
+    <div class="hdr"><div><h2>İstanbul Basın Ekspres · Revenue Management</h2><h1>Günlük Fiyat Analiz Raporu</h1></div><div class="hdr-r"><div class="date">${today}</div><div>Kalan: ${vars.remainingDays} gün | Kur: 1€=₺${activeRate||"?"}</div></div></div>
+    <div class="sec"><div class="sec-t">Finansal Özet</div>
+    <div class="metrics">
+      <div class="m"><div class="ml">Aylık Bütçe</div><div class="mv">€${Number(constants.monthlyBudget).toLocaleString("de-DE")}</div></div>
+      <div class="m"><div class="ml">Gerçekleşen</div><div class="mv">€${Number(vars.realizedRevenue).toLocaleString("de-DE")}</div></div>
+      <div class="m"><div class="ml">Kalan Bütçe</div><div class="mv red">€${remBudget.toFixed(0)}</div></div>
+      <div class="m"><div class="ml">Kalan Havuz</div><div class="mv">${roomPool.toLocaleString()}</div></div>
+    </div>
+    <div class="metrics">
+      <div class="m"><div class="ml">Net ADR</div><div class="mv">€${netADR.toFixed(2)}</div></div>
+      <div class="m"><div class="ml">Acenta Brüt</div><div class="mv gold">€${grossADR_agency.toFixed(2)}</div></div>
+      <div class="m"><div class="ml">Direkt Brüt</div><div class="mv green">€${grossADR_direct.toFixed(2)}</div></div>
+      <div class="m"><div class="ml">Compset ADR</div><div class="mv">€${Number(vars.compsetADR).toFixed(2)}</div></div>
+    </div></div>
+    ${hotelRows ? `<div class="sec"><div class="sec-t">Rakip Fiyatları (Booking.com · EUR)</div><table><thead><tr><th>Otel</th><th style="text-align:right;">Fiyat</th></tr></thead><tbody>${hotelRows}<tr style="background:#faf8f3;font-weight:700;"><td>MEDIAN COMPSET ADR</td><td style="text-align:right;color:#c9a84c;">€${Number(vars.compsetADR).toFixed(2)}</td></tr></tbody></table></div>` : ""}
+    <div class="sec"><div class="sec-t">AI Analiz Sonucu</div><div class="rb">${resultHtml}</div></div>
+    ${vars.demandNotes ? `<div class="sec"><div class="sec-t">Piyasa Notları</div><p style="font-size:14px;color:#555;font-style:italic;">${vars.demandNotes}</p></div>` : ""}
+    <div class="ftr"><span>Powered by Claude · Revenue Intelligence · The G Hotels İstanbul</span><span>${today}</span></div>
+    </body></html>`;
 
     const blob = new Blob([html], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
-    a.download = `revenue-raporu-${today.replace(/\s/g,"-")}.html`;
-    document.body.appendChild(a);
-    a.click();
+    a.href = url; a.download = `revenue-raporu-${today.replace(/\s/g,"-")}.html`;
+    document.body.appendChild(a); a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 2000);
-  }, [vars, constants, result, remBudget, reqADR, roomPool, totalMonthPool, situation, activeRate]);
+  }, [vars, constants, result, remBudget, netADR, grossADR_agency, grossADR_direct, roomPool, activeRate]);
 
   const fmt = (text) => text.split("\n").map((line, i) => {
-    if (["📊","🎯","🧠","⚡"].some(e => line.startsWith(e))) { const parts = line.split("**"); return <p key={i} style={{ marginBottom:"14px" }}>{parts.map((p, j) => j%2===1 ? <strong key={j} style={{ color:"#c9a84c" }}>{p}</strong> : p)}</p>; }
-    return line ? <p key={i} style={{ marginBottom:"4px", marginLeft:"16px", fontSize:"14px", opacity:0.9 }}>{line}</p> : <br key={i}/>;
+    if (["📊","🎯","🧠","⚡"].some(e => line.startsWith(e))) {
+      const parts = line.split("**");
+      return <p key={i} style={{marginBottom:"14px"}}>{parts.map((p,j) => j%2===1 ? <strong key={j} style={{color:"#c9a84c"}}>{p}</strong> : p)}</p>;
+    }
+    return line ? <p key={i} style={{marginBottom:"4px",marginLeft:"16px",fontSize:"14px",opacity:0.9}}>{line}</p> : <br key={i}/>;
   });
 
   const inp = { background:"rgba(255,255,255,0.05)", border:"1px solid rgba(201,168,76,0.3)", borderRadius:"8px", color:"#e8dcc8", padding:"10px 14px", width:"100%", fontSize:"14px", outline:"none", boxSizing:"border-box" };
   const lbl = { display:"block", fontSize:"11px", letterSpacing:"0.08em", textTransform:"uppercase", color:"#c9a84c", marginBottom:"6px", fontWeight:"600" };
 
-  const allHotels = vars.compsetDetails;
-
-  const DropZone = ({ slotIdx }) => {
-    const slot = slots[slotIdx];
-    const label = slotIdx === 0 ? "Görüntü 1 — Geniş Alan" : "Görüntü 2 — Yakın Çekim";
-    const hint = slotIdx === 0 ? "Tüm bölgeyi kapsayan harita" : "Yakınlaştırılmış görüntü";
-    return (
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize:"11px", color:"#c9a84c", fontWeight:"700", letterSpacing:"0.08em", textTransform:"uppercase", marginBottom:"8px" }}>{label}</div>
-        <div
-          onDrop={e => { e.preventDefault(); setSlots(prev => prev.map((s,i) => i===slotIdx?{...s,dragOver:false}:s)); const f=e.dataTransfer.files[0]; if(f) processImage(f,slotIdx); }}
-          onDragOver={e => { e.preventDefault(); setSlots(prev => prev.map((s,i) => i===slotIdx?{...s,dragOver:true}:s)); }}
-          onDragLeave={() => setSlots(prev => prev.map((s,i) => i===slotIdx?{...s,dragOver:false}:s))}
-          onClick={() => fileRefs[slotIdx].current?.click()}
-          style={{ border:`2px dashed ${slot.dragOver?"#c9a84c":slot.loading?"rgba(82,192,130,0.6)":slot.hotels.length>0?"rgba(82,192,130,0.4)":"rgba(201,168,76,0.25)"}`, borderRadius:"12px", padding:"18px 14px", textAlign:"center", cursor:"pointer", background:slot.dragOver?"rgba(201,168,76,0.08)":slot.hotels.length>0?"rgba(82,192,130,0.04)":"rgba(255,255,255,0.02)", transition:"all 0.2s", minHeight:"130px", display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:"6px" }}>
-          <input ref={fileRefs[slotIdx]} type="file" accept="image/*" onChange={e => { const f=e.target.files[0]; if(f) processImage(f,slotIdx); }} style={{ display:"none" }} />
-          {slot.loading ? (
-            <><div style={{ fontSize:"22px" }}>🔍</div><div style={{ fontSize:"12px", color:"#c9a84c" }}>Okunuyor...</div></>
-          ) : slot.hotels.length > 0 ? (
-            <>{slot.preview && <img src={slot.preview} alt="" style={{ width:"80px", height:"56px", objectFit:"cover", borderRadius:"6px", opacity:0.7, marginBottom:"4px" }}/>}
-            <div style={{ fontSize:"12px", color:"#52c082", fontWeight:"700" }}>✓ {slot.hotels.length} fiyat okundu</div>
-            <div style={{ fontSize:"10px", color:"#7a7265" }}>{slot.source} · TRY</div>
-            <div style={{ fontSize:"10px", color:"#4a4540", marginTop:"2px" }}>Değiştirmek için tıkla</div></>
-          ) : (
-            <><div style={{ fontSize:"26px" }}>🗺️</div>
-            <div style={{ fontSize:"12px", color:"#c9a84c" }}>Sürükle veya tıkla</div>
-            <div style={{ fontSize:"10px", color:"#5a5248", lineHeight:"1.4", maxWidth:"140px" }}>{hint}</div></>
-          )}
-        </div>
-      </div>
-    );
-  };
-
   return (
-    <div style={{ minHeight:"100vh", background:"#0d0d0d", fontFamily:"'Georgia', serif", color:"#e8dcc8" }}>
-      <div style={{ maxWidth:"900px", margin:"0 auto", padding:"40px 24px" }}>
+    <div style={{minHeight:"100vh", background:"#0d0d0d", fontFamily:"'Georgia', serif", color:"#e8dcc8"}}>
+      <div style={{maxWidth:"900px", margin:"0 auto", padding:"40px 24px"}}>
 
-        <div style={{ textAlign:"center", marginBottom:"44px" }}>
-          <div style={{ fontSize:"11px", letterSpacing:"0.25em", color:"#c9a84c", marginBottom:"10px", textTransform:"uppercase" }}>İstanbul Basın Ekspres · Gelir Yönetimi</div>
-          <h1 style={{ fontSize:"clamp(24px,5vw,38px)", fontWeight:"400", margin:"0 0 6px", lineHeight:1.1 }}>Revenue Management</h1>
-          <h1 style={{ fontSize:"clamp(24px,5vw,38px)", fontWeight:"700", margin:"0 0 14px", color:"#c9a84c", lineHeight:1.1 }}>Yapay Zeka Asistanı</h1>
-          <p style={{ color:"#7a7265", fontSize:"13px", maxWidth:"540px", margin:"0 auto", lineHeight:1.6 }}>
-            Bütçe & Ciro <strong style={{color:"#c9a84c"}}>EUR</strong> · Harita fiyatları <strong style={{color:"#c9a84c"}}>TRY</strong> → Anlık kur ile otomatik dönüştürülür
+        {/* Header */}
+        <div style={{textAlign:"center", marginBottom:"40px"}}>
+          <div style={{fontSize:"11px", letterSpacing:"0.25em", color:"#c9a84c", marginBottom:"10px", textTransform:"uppercase"}}>The G Hotels İstanbul · Gelir Yönetimi</div>
+          <h1 style={{fontSize:"clamp(24px,5vw,38px)", fontWeight:"400", margin:"0 0 6px", lineHeight:1.1}}>Revenue Management</h1>
+          <h1 style={{fontSize:"clamp(24px,5vw,38px)", fontWeight:"700", margin:"0 0 14px", color:"#c9a84c", lineHeight:1.1}}>Yapay Zeka Asistanı</h1>
+          <p style={{color:"#7a7265", fontSize:"13px", maxWidth:"500px", margin:"0 auto", lineHeight:1.6}}>
+            OTA Insight Excel'ini yükle → Compset otomatik dolsun → Analizi al
           </p>
         </div>
 
-        {/* EUR/TRY Rate Box */}
-        <div style={{ background:"rgba(201,168,76,0.07)", border:"1px solid rgba(201,168,76,0.3)", borderRadius:"14px", padding:"18px 24px", marginBottom:"20px" }}>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:"12px" }}>
-            <div>
-              <div style={{ fontSize:"11px", letterSpacing:"0.12em", textTransform:"uppercase", color:"#c9a84c", marginBottom:"4px" }}>💱 EUR / TRY Kuru</div>
-              {exchangeRate
-                ? <div style={{ fontSize:"20px", fontWeight:"700" }}>1 € = <span style={{ color:"#c9a84c" }}>₺{exchangeRate}</span> <span style={{ fontSize:"11px", color:"#7a7265", fontWeight:"400" }}>· Anlık</span></div>
-                : <div style={{ fontSize:"13px", color:"#7a7265" }}>{rateLoading ? "Kur çekiliyor..." : "Kur alınamadı, manuel girin"}</div>}
-            </div>
-            <div style={{ display:"flex", gap:"10px", alignItems:"center" }}>
-              <div>
-                <div style={{ fontSize:"10px", color:"#5a5248", marginBottom:"4px" }}>Manuel Kur Gir (opsiyonel)</div>
-                <input type="number" placeholder={exchangeRate ? exchangeRate.toString() : "örn: 38.50"} value={rateManual}
-                  onChange={e => setRateManual(e.target.value)}
-                  style={{ ...inp, width:"130px", padding:"8px 12px", fontSize:"14px" }} />
-              </div>
-              <button onClick={fetchRate} disabled={rateLoading}
-                style={{ marginTop:"18px", padding:"8px 14px", fontSize:"12px", background:"rgba(201,168,76,0.15)", color:"#c9a84c", border:"1px solid rgba(201,168,76,0.3)", borderRadius:"8px", cursor:"pointer" }}>
-                {rateLoading ? "⏳" : "🔄 Güncelle"}
-              </button>
-            </div>
+        {/* EUR/TRY Rate */}
+        <div style={{background:"rgba(201,168,76,0.07)", border:"1px solid rgba(201,168,76,0.3)", borderRadius:"14px", padding:"16px 24px", marginBottom:"20px", display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:"12px"}}>
+          <div>
+            <div style={{fontSize:"11px", letterSpacing:"0.12em", textTransform:"uppercase", color:"#c9a84c", marginBottom:"4px"}}>💱 EUR / TRY Kuru</div>
+            {exchangeRate
+              ? <div style={{fontSize:"20px", fontWeight:"700"}}>1 € = <span style={{color:"#c9a84c"}}>₺{exchangeRate}</span> <span style={{fontSize:"11px", color:"#7a7265"}}>· Anlık</span></div>
+              : <div style={{fontSize:"13px", color:"#7a7265"}}>{rateLoading ? "Çekiliyor..." : "Alınamadı"}</div>}
           </div>
-        </div>
-
-        {/* Competitor Panel */}
-        <div style={{ background:"rgba(255,255,255,0.02)", border:"1px solid rgba(255,255,255,0.07)", borderRadius:"12px", padding:"14px 20px", marginBottom:"20px" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer" }} onClick={() => setShowComp(!showComp)}>
-            <span style={{ fontSize:"12px", letterSpacing:"0.1em", textTransform:"uppercase", color:"#7a7265" }}>🏨 Sabit Rakip Seti — 7 Otel · Basın Ekspres / Güneşli</span>
-            <span style={{ color:"#c9a84c", fontSize:"12px" }}>{showComp ? "▲" : "▼ Göster"}</span>
+          <div style={{display:"flex", gap:"10px", alignItems:"center"}}>
+            <input type="number" placeholder="Manuel kur" value={rateManual} onChange={e => setRateManual(e.target.value)} style={{...inp, width:"120px", padding:"8px 12px"}}/>
+            <button onClick={fetchRate} disabled={rateLoading} style={{padding:"8px 14px", fontSize:"12px", background:"rgba(201,168,76,0.15)", color:"#c9a84c", border:"1px solid rgba(201,168,76,0.3)", borderRadius:"8px", cursor:"pointer"}}>
+              {rateLoading ? "⏳" : "🔄"}
+            </button>
+            <button onClick={handleNewMonth} style={{padding:"8px 14px", fontSize:"12px", fontWeight:"700", background:"rgba(82,192,130,0.15)", color:"#52c082", border:"1px solid rgba(82,192,130,0.3)", borderRadius:"8px", cursor:"pointer", whiteSpace:"nowrap"}}>
+              📅 Yeni Ay Başlat
+            </button>
           </div>
-          {showComp && (
-            <div style={{ marginTop:"12px", display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:"8px" }}>
-              {COMPETITORS.map((c, i) => {
-                const found = allHotels.find(d => d.name?.toLowerCase().includes(c.matchKey));
-                return (
-                  <div key={i} style={{ background:found?"rgba(82,192,130,0.07)":"rgba(201,168,76,0.04)", border:`1px solid ${found?"rgba(82,192,130,0.2)":"rgba(201,168,76,0.1)"}`, borderRadius:"8px", padding:"10px 12px" }}>
-                    <div style={{ fontSize:"11px", color:found?"#52c082":"#c9a84c", fontWeight:"700", marginBottom:"3px" }}>{c.short}</div>
-                    {found
-                      ? <><div style={{ fontSize:"14px", fontWeight:"700" }}>€{found.priceEUR?.toFixed(2)}</div>
-                          <div style={{ fontSize:"10px", color:"#5a5248" }}>₺{found.priceTRY?.toLocaleString("tr-TR")}</div></>
-                      : <div style={{ fontSize:"10px", color:"#4a4540" }}>Görüntü yükle</div>}
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
 
         {/* Constants */}
-        <div style={{ background:"rgba(201,168,76,0.05)", border:"1px solid rgba(201,168,76,0.2)", borderRadius:"16px", padding:"28px", marginBottom:"20px" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"20px" }}>
-            <h2 style={{ fontSize:"13px", letterSpacing:"0.15em", textTransform:"uppercase", color:"#c9a84c", margin:0 }}>📋 Aylık Sabitler</h2>
-            {locked && <button onClick={() => setLocked(false)} style={{ fontSize:"11px", color:"#7a7265", background:"none", border:"1px solid rgba(122,114,101,0.3)", borderRadius:"6px", padding:"4px 10px", cursor:"pointer" }}>Düzenle</button>}
+        <div style={{background:"rgba(201,168,76,0.05)", border:"1px solid rgba(201,168,76,0.2)", borderRadius:"16px", padding:"28px", marginBottom:"20px"}}>
+          <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"20px"}}>
+            <h2 style={{fontSize:"13px", letterSpacing:"0.15em", textTransform:"uppercase", color:"#c9a84c", margin:0}}>📋 Aylık Sabitler</h2>
+            {locked && <button onClick={() => setLocked(false)} style={{fontSize:"11px", color:"#7a7265", background:"none", border:"1px solid rgba(122,114,101,0.3)", borderRadius:"6px", padding:"4px 10px", cursor:"pointer"}}>Düzenle</button>}
           </div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"16px" }}>
-            <div><label style={lbl}>Toplam Oda Sayısı</label><input type="number" placeholder="örn: 264" value={constants.totalRooms} disabled={locked} onChange={e => setConstants({...constants,totalRooms:e.target.value})} style={{...inp,opacity:locked?0.5:1}}/></div>
-            <div><label style={lbl}>Ay Gün Sayısı</label><input type="number" placeholder="örn: 31" value={constants.monthDays} disabled={locked} onChange={e => setConstants({...constants,monthDays:e.target.value})} style={{...inp,opacity:locked?0.5:1}}/></div>
+          <div style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:"16px", marginBottom:"16px"}}>
+            <div><label style={lbl}>Toplam Oda</label><input type="number" placeholder="264" value={constants.totalRooms} disabled={locked} onChange={e => setConstants({...constants,totalRooms:e.target.value})} style={{...inp,opacity:locked?0.5:1}}/></div>
+            <div><label style={lbl}>Ay Gün Sayısı</label><input type="number" placeholder="31" value={constants.monthDays} disabled={locked} onChange={e => setConstants({...constants,monthDays:e.target.value})} style={{...inp,opacity:locked?0.5:1}}/></div>
             <div><label style={lbl}>Hedef Doluluk %</label>
               <div style={{position:"relative"}}>
-                <input type="number" min="1" max="100" placeholder="örn: 85" value={constants.sellThrough} disabled={locked} onChange={e => setConstants({...constants,sellThrough:e.target.value})} style={{...inp,opacity:locked?0.5:1,paddingRight:"28px"}}/>
+                <input type="number" min="1" max="100" value={constants.sellThrough} disabled={locked} onChange={e => setConstants({...constants,sellThrough:e.target.value})} style={{...inp,opacity:locked?0.5:1,paddingRight:"28px"}}/>
                 <span style={{position:"absolute",right:"12px",top:"50%",transform:"translateY(-50%)",color:"#c9a84c",fontSize:"13px",pointerEvents:"none"}}>%</span>
               </div>
             </div>
             <div><label style={lbl}>Acenta Komisyonu %</label>
               <div style={{position:"relative"}}>
-                <input type="number" min="0" max="100" placeholder="örn: 20" value={constants.commission} disabled={locked} onChange={e => setConstants({...constants,commission:e.target.value})} style={{...inp,opacity:locked?0.5:1,paddingRight:"28px"}}/>
+                <input type="number" value={constants.commission} disabled={locked} onChange={e => setConstants({...constants,commission:e.target.value})} style={{...inp,opacity:locked?0.5:1,paddingRight:"28px"}}/>
                 <span style={{position:"absolute",right:"12px",top:"50%",transform:"translateY(-50%)",color:"#c9a84c",fontSize:"13px",pointerEvents:"none"}}>%</span>
               </div>
             </div>
             <div><label style={lbl}>KDV %</label>
               <div style={{position:"relative"}}>
-                <input type="number" min="0" max="100" placeholder="örn: 12" value={constants.vat} disabled={locked} onChange={e => setConstants({...constants,vat:e.target.value})} style={{...inp,opacity:locked?0.5:1,paddingRight:"28px"}}/>
+                <input type="number" value={constants.vat} disabled={locked} onChange={e => setConstants({...constants,vat:e.target.value})} style={{...inp,opacity:locked?0.5:1,paddingRight:"28px"}}/>
                 <span style={{position:"absolute",right:"12px",top:"50%",transform:"translateY(-50%)",color:"#c9a84c",fontSize:"13px",pointerEvents:"none"}}>%</span>
               </div>
             </div>
-            <div style={{gridColumn:"1/-1"}}><label style={lbl}>Aylık Bütçe Hedefi (€ EUR)</label><input type="number" placeholder="örn: 150000" value={constants.monthlyBudget} disabled={locked} onChange={e => setConstants({...constants,monthlyBudget:e.target.value})} style={{...inp,opacity:locked?0.5:1}}/></div>
+            <div><label style={lbl}>Aylık Bütçe (€)</label><input type="number" placeholder="örn: 150000" value={constants.monthlyBudget} disabled={locked} onChange={e => setConstants({...constants,monthlyBudget:e.target.value})} style={{...inp,opacity:locked?0.5:1}}/></div>
           </div>
           {!locked && constants.totalRooms && constants.monthlyBudget && (
-            <button onClick={() => setLocked(true)} style={{ marginTop:"16px", fontSize:"12px", color:"#c9a84c", background:"rgba(201,168,76,0.1)", border:"1px solid rgba(201,168,76,0.3)", borderRadius:"8px", padding:"8px 16px", cursor:"pointer" }}>✓ Kilitle</button>
+            <button onClick={() => setLocked(true)} style={{fontSize:"12px", color:"#c9a84c", background:"rgba(201,168,76,0.1)", border:"1px solid rgba(201,168,76,0.3)", borderRadius:"8px", padding:"8px 16px", cursor:"pointer"}}>✓ Kilitle</button>
           )}
         </div>
 
-        {/* Daily */}
-        <div style={{ background:"rgba(255,255,255,0.02)", border:"1px solid rgba(255,255,255,0.08)", borderRadius:"16px", padding:"28px", marginBottom:"20px" }}>
-          <h2 style={{ fontSize:"13px", letterSpacing:"0.15em", textTransform:"uppercase", color:"#e8dcc8", marginBottom:"20px" }}>📅 Günlük Değişkenler</h2>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"16px", marginBottom:"16px" }}>
-            <div><label style={lbl}>Gerçekleşen Ciro (€ EUR)</label><input type="number" placeholder="örn: 72000" value={vars.realizedRevenue} onChange={e => setVars({...vars,realizedRevenue:e.target.value})} style={inp}/></div>
-            <div><label style={lbl}>Kümülatif Satılan Oda (Aya Kadar Toplam)</label><input type="number" placeholder="örn: 1091" value={vars.soldRooms} onChange={e => setVars({...vars,soldRooms:e.target.value})} style={inp}/></div>
-            <div><label style={lbl}>Kalan Gün Sayısı</label><input type="number" placeholder="örn: 14" value={vars.remainingDays} onChange={e => setVars({...vars,remainingDays:e.target.value})} style={inp}/></div>
+        {/* Daily Variables */}
+        <div style={{background:"rgba(255,255,255,0.02)", border:"1px solid rgba(255,255,255,0.08)", borderRadius:"16px", padding:"28px", marginBottom:"20px"}}>
+          <h2 style={{fontSize:"13px", letterSpacing:"0.15em", textTransform:"uppercase", color:"#e8dcc8", marginBottom:"20px"}}>📅 Günlük Değişkenler</h2>
+
+          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"16px", marginBottom:"16px"}}>
+            <div><label style={lbl}>Gerçekleşen Ciro (€)</label><input type="number" placeholder="örn: 72000" value={vars.realizedRevenue} onChange={e => setVars({...vars,realizedRevenue:e.target.value})} style={inp}/></div>
+            <div><label style={lbl}>Kümülatif Satılan Oda</label><input type="number" placeholder="örn: 1091" value={vars.soldRooms} onChange={e => setVars({...vars,soldRooms:e.target.value})} style={inp}/></div>
+            <div><label style={lbl}>Kalan Gün Sayısı</label><input type="number" placeholder="örn: 15" value={vars.remainingDays} onChange={e => setVars({...vars,remainingDays:e.target.value})} style={inp}/></div>
           </div>
 
+          {/* Pool info */}
           {totalRooms > 0 && (
-            <div style={{ background:"rgba(201,168,76,0.08)", border:"1px solid rgba(201,168,76,0.2)", borderRadius:"8px", padding:"12px 16px", marginBottom:"16px", fontSize:"13px", color:"#c9a84c" }}>
-              🏨 <strong>{totalRooms} × {monthDays} × %{constants.sellThrough||85} = {totalMonthPool.toLocaleString()} hedef</strong>
-              {vars.soldRooms !== "" && <> − <strong>{soldRooms.toLocaleString()} satılan</strong> = <strong style={{color:"#e8dcc8"}}>{roomPool.toLocaleString()} kalan satılabilir</strong>{occupancyPct !== null && <span style={{color:"#7a7265"}}> (%{occupancyPct} tamamlandı)</span>}</>}
+            <div style={{background:"rgba(201,168,76,0.08)", border:"1px solid rgba(201,168,76,0.2)", borderRadius:"8px", padding:"12px 16px", marginBottom:"16px", fontSize:"13px", color:"#c9a84c"}}>
+              🏨 <strong>{totalRooms} × {monthDays} × %{constants.sellThrough} = {totalMonthPool.toLocaleString()} hedef</strong>
+              {vars.soldRooms !== "" && <> − <strong>{soldRooms.toLocaleString()} satılan</strong> = <strong style={{color:"#e8dcc8"}}>{roomPool.toLocaleString()} satılabilir</strong>{occupancyPct !== null && <span style={{color:"#7a7265"}}> (%{occupancyPct} tamamlandı)</span>}</>}
             </div>
           )}
 
-          {/* TWO IMAGE UPLOAD SLOTS */}
-          <div style={{ marginBottom:"16px" }}>
-            <label style={lbl}>📸 Compset ADR — Harita Görüntülerinden Oku (TRY → EUR otomatik)</label>
-            <div style={{ display:"flex", gap:"12px", marginBottom:"10px" }}>
-              <DropZone slotIdx={0} />
-              <DropZone slotIdx={1} />
-            </div>
-
-            {(slots[0].hotels.length > 0 || slots[1].hotels.length > 0) && (
-              <div style={{ background:"rgba(82,192,130,0.07)", border:"1px solid rgba(82,192,130,0.2)", borderRadius:"8px", padding:"10px 14px", marginBottom:"10px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                <span style={{ fontSize:"12px", color:"#52c082" }}>
-                  ✓ {allHotels.length} otel · {activeRate && `1€ = ₺${activeRate} kuruyla dönüştürüldü`}
-                </span>
-                <div style={{ textAlign:"right" }}>
-                  <div style={{ fontSize:"15px", fontWeight:"700", color:"#c9a84c" }}>€{Number(vars.compsetADR).toFixed(2)}</div>
-                  <div style={{ fontSize:"11px", color:"#7a7265" }}>₺{Number(vars.compsetADR_TRY).toLocaleString("tr-TR")} ortalama</div>
+          {/* OTA Insight Excel Upload */}
+          <div style={{marginBottom:"16px"}}>
+            <label style={lbl}>📊 OTA Insight Excel — Compset Otomatik Yükle</label>
+            <div
+              onDrop={e => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]); }}
+              onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+              onDragLeave={() => setDragOver(false)}
+              onClick={() => fileRef.current?.click()}
+              style={{border:`2px dashed ${dragOver?"#c9a84c":excelData?"rgba(82,192,130,0.5)":"rgba(201,168,76,0.25)"}`, borderRadius:"12px", padding:"20px", textAlign:"center", cursor:"pointer", background:dragOver?"rgba(201,168,76,0.08)":excelData?"rgba(82,192,130,0.04)":"rgba(255,255,255,0.02)", transition:"all 0.2s"}}>
+              <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={e => handleFile(e.target.files[0])} style={{display:"none"}}/>
+              {xlsxLoading ? (
+                <div style={{color:"#c9a84c", fontSize:"14px"}}>⏳ Excel okunuyor...</div>
+              ) : excelData ? (
+                <div>
+                  <div style={{fontSize:"13px", color:"#52c082", fontWeight:"700", marginBottom:"6px"}}>✓ OTA Insight verisi yüklendi · {excelData.updatedAt}</div>
+                  <div style={{display:"flex", justifyContent:"center", gap:"20px", flexWrap:"wrap"}}>
+                    <span style={{fontSize:"12px", color:"#c9a84c"}}>Median Compset: <strong>€{excelData.medianCompset?.toFixed(2)}</strong></span>
+                    {excelData.demandLabel && <span style={{fontSize:"12px", color:"#9a9285"}}>Talep: <strong>{excelData.demandLabel}</strong></span>}
+                    {excelData.holidays && <span style={{fontSize:"12px", color:"#e05252"}}>🗓 {excelData.holidays}</span>}
+                    {excelData.events && <span style={{fontSize:"12px", color:"#e0a052"}}>⭐ {excelData.events}</span>}
+                  </div>
+                  <div style={{fontSize:"10px", color:"#4a4540", marginTop:"6px"}}>Güncellemek için tıkla</div>
                 </div>
-              </div>
-            )}
-
-            <div style={{ display:"flex", gap:"10px", alignItems:"center" }}>
-              <span style={{ fontSize:"11px", color:"#5a5248", whiteSpace:"nowrap" }}>veya manuel (€):</span>
-              <input type="number" placeholder="Compset ADR (EUR)" value={vars.compsetADR}
-                onChange={e => setVars({...vars, compsetADR:e.target.value, compsetDetails:[]})}
-                style={{...inp,fontSize:"13px",padding:"8px 12px"}}/>
+              ) : (
+                <div>
+                  <div style={{fontSize:"24px", marginBottom:"8px"}}>📂</div>
+                  <div style={{fontSize:"13px", color:"#c9a84c", marginBottom:"4px"}}>OTA Insight Excel dosyasını sürükle veya tıkla</div>
+                  <div style={{fontSize:"11px", color:"#5a5248"}}>.xlsx · Rates + Overview sayfaları gerekli</div>
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Price table */}
-          {allHotels.length > 0 && (
-            <div style={{ background:"rgba(82,192,130,0.04)", border:"1px solid rgba(82,192,130,0.12)", borderRadius:"10px", padding:"14px", marginBottom:"16px" }}>
-              <div style={{ fontSize:"11px", color:"#52c082", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:"10px" }}>📊 Rakip Fiyatları — TRY → EUR @ {activeRate}</div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px" }}>
-                {allHotels.map((h, i) => (
-                  <div key={i} style={{ background:"rgba(255,255,255,0.03)", borderRadius:"8px", padding:"8px 12px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                    <span style={{ fontSize:"11px", color:"#9a9285" }}>{h.name}</span>
-                    <div style={{ textAlign:"right" }}>
-                      <div style={{ fontSize:"13px", fontWeight:"700" }}>€{h.priceEUR?.toFixed(2)}</div>
-                      <div style={{ fontSize:"10px", color:"#5a5248" }}>₺{h.priceTRY?.toLocaleString("tr-TR")}</div>
-                    </div>
+          {/* Compset detail table */}
+          {vars.compsetDetails.length > 0 && (
+            <div style={{background:"rgba(82,192,130,0.04)", border:"1px solid rgba(82,192,130,0.12)", borderRadius:"10px", padding:"14px", marginBottom:"16px"}}>
+              <div style={{fontSize:"11px", color:"#52c082", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:"10px"}}>📊 Rakip Fiyatları — Booking.com · EUR</div>
+              <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px"}}>
+                {vars.compsetDetails.map((h,i) => (
+                  <div key={i} style={{background:"rgba(255,255,255,0.03)", borderRadius:"8px", padding:"8px 12px", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+                    <span style={{fontSize:"11px", color:"#9a9285"}}>{h.name}</span>
+                    <span style={{fontSize:"13px", fontWeight:"700"}}>€{h.price}</span>
                   </div>
                 ))}
-                <div style={{ background:"rgba(201,168,76,0.1)", borderRadius:"8px", padding:"8px 12px", display:"flex", justifyContent:"space-between", alignItems:"center", border:"1px solid rgba(201,168,76,0.2)", gridColumn:"1/-1" }}>
-                  <span style={{ fontSize:"12px", color:"#c9a84c", fontWeight:"700" }}>ORTALAMA COMPSET ADR</span>
-                  <div style={{ textAlign:"right" }}>
-                    <div style={{ fontSize:"15px", fontWeight:"700", color:"#c9a84c" }}>€{Number(vars.compsetADR).toFixed(2)}</div>
-                    <div style={{ fontSize:"11px", color:"#7a7265" }}>₺{Number(vars.compsetADR_TRY).toLocaleString("tr-TR")}</div>
-                  </div>
+                <div style={{background:"rgba(201,168,76,0.1)", borderRadius:"8px", padding:"8px 12px", display:"flex", justifyContent:"space-between", alignItems:"center", border:"1px solid rgba(201,168,76,0.2)", gridColumn:"1/-1"}}>
+                  <span style={{fontSize:"12px", color:"#c9a84c", fontWeight:"700"}}>MEDIAN COMPSET ADR</span>
+                  <span style={{fontSize:"15px", fontWeight:"700", color:"#c9a84c"}}>€{Number(vars.compsetADR).toFixed(2)}</span>
                 </div>
               </div>
             </div>
           )}
 
-          <div><label style={lbl}>Talep Durumu / Notlar</label><input type="text" placeholder="örn: Hafta sonu etkinlik var, yüksek talep bekleniyor" value={vars.demandNotes} onChange={e => setVars({...vars,demandNotes:e.target.value})} style={inp}/></div>
+          {/* Manual compset override */}
+          <div style={{display:"flex", gap:"10px", alignItems:"center", marginBottom:"16px"}}>
+            <span style={{fontSize:"11px", color:"#5a5248", whiteSpace:"nowrap"}}>Compset ADR manuel (€):</span>
+            <input type="number" placeholder="Excel yoksa gir" value={vars.compsetADR} onChange={e => setVars({...vars,compsetADR:e.target.value,compsetDetails:[]})} style={{...inp,fontSize:"13px",padding:"8px 12px"}}/>
+          </div>
+
+          <div><label style={lbl}>Talep Durumu / Notlar</label>
+            <input type="text" placeholder="Otomatik dolar, istersen düzenle" value={vars.demandNotes} onChange={e => setVars({...vars,demandNotes:e.target.value})} style={inp}/>
+          </div>
         </div>
 
         {/* Metrics */}
         {vars.realizedRevenue && vars.remainingDays && (
-          <div style={{ marginBottom:"20px" }}>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:"12px", marginBottom:"8px" }}>
+          <div style={{marginBottom:"20px"}}>
+            <div style={{display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:"12px", marginBottom:"8px"}}>
               {[
-                { label:"Satılabilir Havuz", value:roomPool.toLocaleString() },
-                { label:"Kalan Bütçe", value:`€${remBudget.toFixed(0)}` },
-                { label:"Net ADR (Bütçe/Havuz)", value:`€${netADR.toFixed(2)}` },
+                {label:"Satılabilir Havuz", value:roomPool.toLocaleString()},
+                {label:"Kalan Bütçe", value:`€${remBudget.toFixed(0)}`},
+                {label:"Net ADR", value:`€${netADR.toFixed(2)}`},
               ].map((m,i) => (
-                <div key={i} style={{ background:"rgba(255,255,255,0.03)", border:"1px solid rgba(255,255,255,0.06)", borderRadius:"12px", padding:"14px", textAlign:"center" }}>
-                  <div style={{ fontSize:"10px", color:"#7a7265", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:"8px" }}>{m.label}</div>
-                  <div style={{ fontSize:"16px", fontWeight:"700", color:"#e8dcc8" }}>{m.value}</div>
+                <div key={i} style={{background:"rgba(255,255,255,0.03)", border:"1px solid rgba(255,255,255,0.06)", borderRadius:"12px", padding:"14px", textAlign:"center"}}>
+                  <div style={{fontSize:"10px", color:"#7a7265", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:"8px"}}>{m.label}</div>
+                  <div style={{fontSize:"16px", fontWeight:"700", color:"#e8dcc8"}}>{m.value}</div>
                 </div>
               ))}
             </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"12px" }}>
-              <div style={{ background:"rgba(201,168,76,0.07)", border:"1px solid rgba(201,168,76,0.4)", borderRadius:"12px", padding:"16px", textAlign:"center" }}>
-                <div style={{ fontSize:"10px", color:"#c9a84c", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:"6px" }}>Acenta Brüt Fiyat (+%{constants.commission} kom. +%{constants.vat} KDV)</div>
-                <div style={{ fontSize:"22px", fontWeight:"700", color:"#c9a84c" }}>€{grossADR_agency.toFixed(2)}</div>
-                <div style={{ fontSize:"11px", color:"#7a7265", marginTop:"4px" }}>₺{activeRate ? Math.round(grossADR_agency * activeRate).toLocaleString("tr-TR") : "—"}</div>
+            <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:"12px"}}>
+              <div style={{background:"rgba(201,168,76,0.07)", border:"1px solid rgba(201,168,76,0.4)", borderRadius:"12px", padding:"16px", textAlign:"center"}}>
+                <div style={{fontSize:"10px", color:"#c9a84c", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:"6px"}}>Acenta Brüt (+%{constants.commission} kom. +%{constants.vat} KDV)</div>
+                <div style={{fontSize:"22px", fontWeight:"700", color:"#c9a84c"}}>€{grossADR_agency.toFixed(2)}</div>
+                <div style={{fontSize:"11px", color:"#7a7265", marginTop:"4px"}}>₺{activeRate ? Math.round(grossADR_agency * activeRate).toLocaleString("tr-TR") : "—"}</div>
               </div>
-              <div style={{ background:"rgba(82,192,130,0.06)", border:"1px solid rgba(82,192,130,0.3)", borderRadius:"12px", padding:"16px", textAlign:"center" }}>
-                <div style={{ fontSize:"10px", color:"#52c082", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:"6px" }}>Direkt Brüt Fiyat (+%{constants.vat} KDV)</div>
-                <div style={{ fontSize:"22px", fontWeight:"700", color:"#52c082" }}>€{grossADR_direct.toFixed(2)}</div>
-                <div style={{ fontSize:"11px", color:"#7a7265", marginTop:"4px" }}>₺{activeRate ? Math.round(grossADR_direct * activeRate).toLocaleString("tr-TR") : "—"}</div>
+              <div style={{background:"rgba(82,192,130,0.06)", border:"1px solid rgba(82,192,130,0.3)", borderRadius:"12px", padding:"16px", textAlign:"center"}}>
+                <div style={{fontSize:"10px", color:"#52c082", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:"6px"}}>Direkt Brüt (+%{constants.vat} KDV)</div>
+                <div style={{fontSize:"22px", fontWeight:"700", color:"#52c082"}}>€{grossADR_direct.toFixed(2)}</div>
+                <div style={{fontSize:"11px", color:"#7a7265", marginTop:"4px"}}>₺{activeRate ? Math.round(grossADR_direct * activeRate).toLocaleString("tr-TR") : "—"}</div>
               </div>
             </div>
-            <div style={{ marginTop:"8px", background: situation==="A"?"rgba(224,82,82,0.08)":"rgba(82,192,130,0.08)", border:`1px solid ${situation==="A"?"rgba(224,82,82,0.3)":"rgba(82,192,130,0.3)"}`, borderRadius:"10px", padding:"10px 16px", textAlign:"center", fontSize:"13px", color: situation==="A"?"#e05252":"#52c082", fontWeight:"700" }}>
+            <div style={{marginTop:"8px", background:situation==="A"?"rgba(224,82,82,0.08)":"rgba(82,192,130,0.08)", border:`1px solid ${situation==="A"?"rgba(224,82,82,0.3)":"rgba(82,192,130,0.3)"}`, borderRadius:"10px", padding:"10px 16px", textAlign:"center", fontSize:"13px", color:situation==="A"?"#e05252":"#52c082", fontWeight:"700"}}>
               {situation==="A" ? "⚠️ Acenta brüt fiyatı compset üstünde — değer artırıcı strateji önerilir" : situation==="B" ? "✅ Acenta brüt fiyatı compset altında — fiyat artırım fırsatı var" : "—"}
             </div>
           </div>
         )}
 
-        <button onClick={handleAnalyze} disabled={loading} style={{ width:"100%", padding:"18px", fontSize:"14px", letterSpacing:"0.12em", textTransform:"uppercase", background:loading?"rgba(201,168,76,0.2)":"linear-gradient(135deg,#c9a84c,#a07830)", color:"#0d0d0d", border:"none", borderRadius:"12px", cursor:loading?"not-allowed":"pointer", fontWeight:"700", marginBottom:"24px" }}>
+        <button onClick={handleAnalyze} disabled={loading} style={{width:"100%", padding:"18px", fontSize:"14px", letterSpacing:"0.12em", textTransform:"uppercase", background:loading?"rgba(201,168,76,0.2)":"linear-gradient(135deg,#c9a84c,#a07830)", color:"#0d0d0d", border:"none", borderRadius:"12px", cursor:loading?"not-allowed":"pointer", fontWeight:"700", marginBottom:"24px"}}>
           {loading ? "⏳ Analiz Ediliyor..." : "🔍 Günü Analiz Et"}
         </button>
 
-        {error && <div style={{ background:"rgba(224,82,82,0.1)", border:"1px solid rgba(224,82,82,0.3)", borderRadius:"12px", padding:"16px", marginBottom:"20px", color:"#e05252", fontSize:"14px" }}>{error}</div>}
+        {error && <div style={{background:"rgba(224,82,82,0.1)", border:"1px solid rgba(224,82,82,0.3)", borderRadius:"12px", padding:"16px", marginBottom:"20px", color:"#e05252", fontSize:"14px"}}>{error}</div>}
 
         {result && (
-          <div style={{ background:"rgba(201,168,76,0.04)", border:"1px solid rgba(201,168,76,0.25)", borderRadius:"16px", padding:"28px" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"20px" }}>
-              <h3 style={{ fontSize:"11px", letterSpacing:"0.2em", textTransform:"uppercase", color:"#c9a84c", margin:0 }}>AI Analiz Sonucu</h3>
-              <button onClick={handlePDFExport} style={{ display:"flex", alignItems:"center", gap:"6px", padding:"8px 16px", fontSize:"12px", fontWeight:"700", letterSpacing:"0.06em", background:"linear-gradient(135deg,#c9a84c,#a07830)", color:"#0d0d0d", border:"none", borderRadius:"8px", cursor:"pointer" }}>
-                📄 PDF İndir
+          <div style={{background:"rgba(201,168,76,0.04)", border:"1px solid rgba(201,168,76,0.25)", borderRadius:"16px", padding:"28px"}}>
+            <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"20px"}}>
+              <h3 style={{fontSize:"11px", letterSpacing:"0.2em", textTransform:"uppercase", color:"#c9a84c", margin:0}}>AI Analiz Sonucu</h3>
+              <button onClick={handlePDFExport} style={{padding:"8px 16px", fontSize:"12px", fontWeight:"700", background:"linear-gradient(135deg,#c9a84c,#a07830)", color:"#0d0d0d", border:"none", borderRadius:"8px", cursor:"pointer"}}>
+                📄 Rapor İndir
               </button>
             </div>
-            <div style={{ lineHeight:"1.8", fontSize:"15px" }}>{fmt(result)}</div>
+            <div style={{lineHeight:"1.8", fontSize:"15px"}}>{fmt(result)}</div>
           </div>
         )}
 
-        <p style={{ textAlign:"center", fontSize:"11px", color:"#3a3530", marginTop:"40px", letterSpacing:"0.08em" }}>POWERED BY CLAUDE · REVENUE INTELLIGENCE · İSTANBUL BASIN EKSPRES</p>
+        <p style={{textAlign:"center", fontSize:"11px", color:"#3a3530", marginTop:"40px", letterSpacing:"0.08em"}}>
+          POWERED BY CLAUDE · REVENUE INTELLIGENCE · THE G HOTELS İSTANBUL
+        </p>
       </div>
     </div>
   );
-}
-
-export async function POST(request) {
-  const body = await request.json();
-
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify(body),
-  });
-
-  const data = await response.json();
-  return Response.json(data);
 }
