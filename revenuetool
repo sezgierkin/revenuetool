@@ -30,14 +30,14 @@ export default function RevenueManagementTool() {
     realizedRevenue: "", soldRooms: "", remainingDays: "",
     compsetADR: "", compsetDetails: [], demandNotes: "", holidays: "", todayDemand: ""
   });
-  const [excelData, setExcelData] = useState(null); // parsed from xlsx
-  const [result, setResult] = useState(null);
+  const [excelData, setExcelData] = useState<any>(null); // parsed from xlsx
+  const [result, setResult] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [xlsxLoading, setXlsxLoading] = useState(false);
-  const [exchangeRate, setExchangeRate] = useState(null);
+  const [exchangeRate, setExchangeRate] = useState<number | null>(null);
   const [rateLoading, setRateLoading] = useState(false);
   const [rateManual, setRateManual] = useState("");
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
   const [locked, setLocked] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef(null);
@@ -66,7 +66,7 @@ export default function RevenueManagementTool() {
     try {
       const r = await fetch("https://api.frankfurter.app/latest?from=EUR&to=TRY");
       const d = await r.json();
-      if (d?.rates?.TRY) { const rate: number = Math.round(d.rates.TRY * 100) / 100; setExchangeRate(rate); }
+      if (d?.rates?.TRY) setExchangeRate(Math.round(d.rates.TRY * 100) / 100);
     } catch {} finally { setRateLoading(false); }
   }, []);
 
